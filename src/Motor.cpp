@@ -20,7 +20,6 @@ Motor::Motor()
   MOVE[2] = &Motor::Left;
   MOVE[3] = &Motor::Right;
   MOVE[4] = &Motor::Stop;
-
 }
 
 void Motor::Stop(int speed)
@@ -48,19 +47,20 @@ void Motor::Back(int speed)
   analogWrite(PWMB_RIGHT, speed);
 }
 
-
 void Motor::Left(int speed)
 {
-  digitalWrite(AIN1, 1);
-  digitalWrite(BIN1, 1);
-  analogWrite(PWMA_LEFT, speed);
-  analogWrite(PWMB_RIGHT, 0);
+  // Left motor backwards, right motor forwards
+  digitalWrite(AIN1, 1); // Left motor direction
+  digitalWrite(BIN1, 0); // Right motor direction
+  analogWrite(PWMA_LEFT, speed);  // Left motor speed
+  analogWrite(PWMB_RIGHT, speed); // Right motor speed
 }
 
 void Motor::Right(int speed)
 {
-  digitalWrite(AIN1, 1);
-  digitalWrite(BIN1, 1);
-  analogWrite(PWMA_LEFT,0);
-  analogWrite(PWMB_RIGHT,speed);
+  // Left motor forwards, right motor backwards
+  digitalWrite(AIN1, 0); // Left motor direction
+  digitalWrite(BIN1, 1); // Right motor direction
+  analogWrite(PWMA_LEFT, speed);  // Left motor speed
+  analogWrite(PWMB_RIGHT, speed); // Right motor speed
 }

@@ -6,12 +6,17 @@
 #include "Motor.hpp"
 #include "wifi_setup.h"
 
+// Define USE_SERIAL to enable Serial debugging
+// #define USE_SERIAL
+
 String hostname = "tumbller";
 
 Motor Motor;
 
 /*You can set the speed: 0~255 */
 #define SPEED 60
+#define FORWARD_BACK_TIME 2000  // 2 seconds in milliseconds
+#define TURN_TIME 1000         // 1 second in milliseconds
 
 char strbuf[][50]={
   "FORWARD",
@@ -32,8 +37,12 @@ unsigned long previousTime = 0;
 // Define timeout time in milliseconds (example: 2000ms = 2s)
 const long timeoutTime = 2000;
 
-String motorState;
+// Motor control timing
+unsigned long motorStartTime = 0;
+bool motorRunning = false;
+unsigned long currentMotorTimeout = FORWARD_BACK_TIME;  // Default to forward/back time
 
+String motorState;
 
 SensirionI2cSht3x sensor;
 
@@ -47,34 +56,42 @@ void setup() {
   digitalWrite(LED_GREEN, HIGH);
   Motor.Pin_init();
   Motor.Stop(0);
-  // Motor.Encoder_init();
-  //Serial.begin(115200);
-  // while (!Serial) {
-  //     delay(100);
-  // }
+  
+#ifdef USE_SERIAL
+  Serial.begin(115200);
+  while (!Serial) {
+    delay(100);
+  }
+  Serial.println("Connecting to wifi");
+  Serial.println(WIFI_SSID);
+#endif
+
   //Setup wifi
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
   WiFi.setHostname(hostname.c_str()); //define hostname
-  //Serial.println("Connecting to wifi");
-  // Serial.println(WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASS );
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  
   int count = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(200);
     digitalWrite(LED_RED, !digitalRead(LED_RED));
-    // Serial.print(".");
-    // count++;
-    // if(count > 80)
-    // {
-    //   Serial.print("\n");
-    // }
+#ifdef USE_SERIAL
+    Serial.print(".");
+    count++;
+    if(count > 80) {
+      Serial.print("\n");
+    }
+#endif
   }
   digitalWrite(LED_RED, HIGH);
-    // Print local IP address and start web server
-  // Serial.println("");
-  // Serial.println("WiFi connected.");
-  // Serial.println("IP address: ");
-  // Serial.println(WiFi.localIP());
+
+#ifdef USE_SERIAL
+  Serial.println("");
+  Serial.println("WiFi connected.");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+#endif
+
   server.begin();
 
   //Setup humidity and temp sensor
@@ -95,63 +112,82 @@ void setup() {
   // }
   // Serial.print("aStatusRegister: ");
   // Serial.print(aStatusRegister);
-  // Serial.println();  
+  // Serial.println(); 
+}
+
+void startMotorTimer(unsigned long timeout) {
+  motorStartTime = millis();
+  motorRunning = true;
+  currentMotorTimeout = timeout;
+}
+
+void checkAndStopMotor() {
+  if (motorRunning && (millis() - motorStartTime >= currentMotorTimeout)) {
+    Motor.Stop(0);
+    motorRunning = false;
+#ifdef USE_SERIAL
+    Serial.println("Motor stopped after time limit");
+#endif
+    motorState = strbuf[4]; // STOP
+  }
 }
 
 void loop() {
+  // Check if we need to stop the motor
+  checkAndStopMotor();
 
   WiFiClient client = server.available();   // Listen for incoming clients
 
   if (millis() % 1000 == 0) {
     digitalWrite(LED_BLUE, !digitalRead(LED_BLUE));
   }
+  
   if (client) {
     currentTime = millis();
     previousTime = currentTime;
-    // Serial.println("New Client.");
+#ifdef USE_SERIAL
+    Serial.println("New Client.");
+#endif
     String currentLine = "";                // make a String to hold incoming data from the client
     while (client.connected() && currentTime - previousTime <= timeoutTime) {
-      
       currentTime = millis();
       if (client.available()) {
         char c = client.read();
-        // Serial.write(c);
+#ifdef USE_SERIAL
+        Serial.write(c);
+#endif
         header += c;
-        if (c == '\n') { // if the byte is a newline character
-          // if the current line is blank, you got two newline characters in a row.
-          // that's the end of the client HTTP request, so send a response
+        if (c == '\n') {
           if (currentLine.length() == 0) {
-
-            // Check if the request is for the /sensor/ht endpoint
             if (header.indexOf("GET /sensor/ht") >= 0) {
                 float aTemperature = 0.0;
                 float aHumidity = 0.0;
                 error = sensor.measureSingleShot(REPEATABILITY_MEDIUM, false, aTemperature, aHumidity);
                 if (error != NO_ERROR) {
-                    // Serial.print("Error trying to execute blockingReadMeasurement(): ");
+#ifdef USE_SERIAL
+                    Serial.print("Error trying to execute blockingReadMeasurement(): ");
                     errorToString(error, errorMessage, sizeof errorMessage);
-                    // Serial.println(errorMessage);
+                    Serial.println(errorMessage);
+#endif
                     return;
                 }
-                // Serial.print("aTemperature: ");
-                // Serial.print(aTemperature);
-                // Serial.print("\t");
-                // Serial.print("aHumidity: ");
-                // Serial.print(aHumidity);
-                // Serial.println();
+#ifdef USE_SERIAL
+                Serial.print("aTemperature: ");
+                Serial.print(aTemperature);
+                Serial.print("\t");
+                Serial.print("aHumidity: ");
+                Serial.print(aHumidity);
+                Serial.println();
+#endif
 
-              // Format the data as a JSON string
               String jsonResponse = "{\"temperature\": " + String(aTemperature) + ", \"humidity\": " + String(aHumidity) + "}";
 
-              // Send the HTTP response with the JSON string
               client.println("HTTP/1.1 200 OK");
               client.println("Content-type: application/json");
               client.println("Connection: close");
               client.println();
               client.println(jsonResponse);
             } else {
-              // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
-              // and a content-type so the client knows what's coming, then a blank line:
               client.println("HTTP/1.1 200 OK");
               client.println("Content-type:text/html");
               client.println("Connection: close");
@@ -159,45 +195,58 @@ void loop() {
 
               // Move the motors
               if (header.indexOf("GET /motor/forward") >= 0) {
-                // Serial.println(strbuf[0]);
+#ifdef USE_SERIAL
+                Serial.println(strbuf[0]);
+#endif
                 motorState = strbuf[0];
-                (Motor.*(Motor.MOVE[0]))(SPEED);
+                Motor.Forward(SPEED);
+                startMotorTimer(FORWARD_BACK_TIME);
               } else if (header.indexOf("GET /motor/back") >= 0) {
-                // Serial.println(strbuf[1]);
+#ifdef USE_SERIAL
+                Serial.println(strbuf[1]);
+#endif
                 motorState = strbuf[1];
-                (Motor.*(Motor.MOVE[1]))(SPEED);
+                Motor.Back(SPEED);
+                startMotorTimer(FORWARD_BACK_TIME);
               } else if (header.indexOf("GET /motor/left") >= 0) {
-                // Serial.println(strbuf[2]);
+#ifdef USE_SERIAL
+                Serial.println(strbuf[2]);
+#endif
                 motorState = strbuf[2];
-                (Motor.*(Motor.MOVE[2]))(SPEED);
+                Motor.Left(SPEED);
+                startMotorTimer(TURN_TIME);
               } else if (header.indexOf("GET /motor/right") >= 0) {
-                // Serial.println(strbuf[3]);
+#ifdef USE_SERIAL
+                Serial.println(strbuf[3]);
+#endif
                 motorState = strbuf[3];
-                (Motor.*(Motor.MOVE[3]))(SPEED);
+                Motor.Right(SPEED);
+                startMotorTimer(TURN_TIME);
               } else if (header.indexOf("GET /motor/stop") >= 0) {
-                // Serial.println(strbuf[4]);
+#ifdef USE_SERIAL
+                Serial.println(strbuf[4]);
+#endif
                 motorState = strbuf[4];
-                (Motor.*(Motor.MOVE[4]))(SPEED);
-              } 
+                Motor.Stop(SPEED);
+                motorRunning = false;
+              }
 
-              // The HTTP response ends with another blank line
               client.println();
-              // Break out of the while loop
               break;
             }
-          } else { // if you got a newline, then clear currentLine
+          } else {
             currentLine = "";
           }
-        } else if (c != '\r') { // if you got anything else but a carriage return
-          currentLine += c;    // add it to the end of the currentLine
+        } else if (c != '\r') {
+          currentLine += c;
         }
       }
     }
-    // Clear the header variable
     header = "";
-    // Close the connection
     client.stop();
-    // Serial.println("Client disconnected.");
-    // Serial.println("");
+#ifdef USE_SERIAL
+    Serial.println("Client disconnected.");
+    Serial.println("");
+#endif
   }
 }
