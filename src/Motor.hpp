@@ -29,7 +29,7 @@ class Motor
           #define OE   A6
           #define AIN1 7
           #define PWMA_LEFT 5
-          #define BIN1 12
+          #define BIN1 A0
           #define PWMB_RIGHT 6
           #define STBY_PIN 8
           
