@@ -59,5 +59,43 @@ platformio run
 
 Upload to the board: `platformio run --target upload`
 
+# Architecture (high level)
+
+```
+		+-----------------------+
+		|   HTTP clients (GET)  |
+		+-----------+-----------+
+			    |
+			    v
+		 +----------+-----------+
+		 |  server_task (core0) |
+		 |  /info, /sensor/ht,  |
+		 |  /motor/* endpoints  |
+		 +----------+-----------+
+			    |
+	  enqueues MotorCommand over FreeRTOS queue
+			    |
+			    v
+		 +----------+-----------+
+		 |  motor_task (core1)  |
+		 |  consumes queue and  |
+		 |  drives Motor driver |
+		 +----------+-----------+
+			    |
+		    GPIO pins (A0/A6/5/6/7/8)
+
+		 +----------+-----------+
+		 |  SHT3x sensor (I2C)  |
+		 |  initialized in      |
+		 |  task_common_init()  |
+		 +----------------------+
+
+main.cpp sets up WiFi + mDNS, calls task_common_init() to create the motor
+queue and init the SHT3x, then starts server_task (core 0) and motor_task
+(core 1). server_task parses HTTP requests; motor_task executes motor
+commands for a bounded duration. The heartbeat LED blinks inside
+server_task to show liveness.
+```
+
 # TODO
 # Serial console on Linux-compatible systems: cu -s 115200 -l /dev/tty.usbserial
