@@ -2,7 +2,7 @@
 
 // Global project configuration: serial logging toggle and pin assignments.
 #ifndef USE_SERIAL
-#define USE_SERIAL
+// #define USE_SERIAL
 #endif
 
 #ifdef USE_SERIAL

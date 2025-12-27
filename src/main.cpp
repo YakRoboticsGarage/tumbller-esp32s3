@@ -20,8 +20,9 @@ void setup() {
   pinMode(LED_BLUE, OUTPUT);
 #ifdef USE_SERIAL
   Serial.begin(115200);
-  while (!Serial) {
-    delay(100);
+  unsigned long serialWaitStart = millis();
+  while (!Serial && (millis() - serialWaitStart) < 500) {
+    delay(10);
   }
   Serial.println("Connecting to wifi");
   Serial.println(WIFI_SSID);
