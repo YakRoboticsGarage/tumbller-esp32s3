@@ -43,7 +43,7 @@ private:
   Gains _gains;
   float _targetSpeed = 0.0f; // user set forward
   float _targetTurn = 0.0f;  // user set turn
-  float _speedEstimate = 0.0f; // TODO: from encoders
+  float _speedEstimate = 0.0f; // Updated from encoder feedback in applyBalanceControl()
   float _speedI = 0.0f;
   float _gyroBias = 0.0f;
   float _angleZero = 0.0f;
@@ -58,6 +58,18 @@ private:
   BalanceState _state = BalanceState::INIT;
   unsigned long _stateStartTime = 0;
   unsigned long _leanBackDuration = 0;
+
+  // Encoder-based speed estimation (200Hz - full rate on ESP32)
+  int _encoderLeftAccum = 0;
+  int _encoderRightAccum = 0;
+  float _speedFilter = 0.0f;
+
+  // Turn damping
+  float _gyroZ = 0.0f;
+
+  // Track last PWM signs for encoder direction
+  int _lastLeftPWM = 0;
+  int _lastRightPWM = 0;
 };
 
 #endif

@@ -129,6 +129,26 @@ bool Balancer::isInValidRange() const {
 
 void Balancer::applyBalanceControl() {
   // ─────────────────────────────────────────────────────────────────────
+  // ENCODER-BASED SPEED ESTIMATION (200Hz on ESP32)
+  // ─────────────────────────────────────────────────────────────────────
+  // Read and reset encoder counts atomically
+  unsigned long leftCount = Motor::encoder_count_left_a;
+  unsigned long rightCount = Motor::encoder_count_right_a;
+  Motor::encoder_count_left_a = 0;
+  Motor::encoder_count_right_a = 0;
+
+  // Accumulate with direction sign based on last PWM
+  _encoderLeftAccum += (_lastLeftPWM < 0) ? -(int)leftCount : (int)leftCount;
+  _encoderRightAccum += (_lastRightPWM < 0) ? -(int)rightCount : (int)rightCount;
+
+  // Compute speed and apply low-pass filter
+  float carSpeed = (_encoderLeftAccum + _encoderRightAccum) * 0.5f;
+  _encoderLeftAccum = 0;
+  _encoderRightAccum = 0;
+  _speedFilter = _speedFilter * 0.7f + carSpeed * 0.3f;
+  _speedEstimate = _speedFilter;
+
+  // ─────────────────────────────────────────────────────────────────────
   // BALANCE PD CONTROLLER
   // ─────────────────────────────────────────────────────────────────────
   float balance = _gains.kp * _kf.angle + _gains.kd * _kf.angleRate;
@@ -142,9 +162,9 @@ void Balancer::applyBalanceControl() {
   float speedOut = _gains.kp_speed * speedError + _gains.ki_speed * _speedI;
 
   // ─────────────────────────────────────────────────────────────────────
-  // TURN P CONTROLLER
+  // TURN PD CONTROLLER (with gyro damping)
   // ─────────────────────────────────────────────────────────────────────
-  float turnOut = _gains.kp_turn * _targetTurn;
+  float turnOut = _gains.kp_turn * _targetTurn + _gains.kd_turn * _gyroZ;
 
   // ─────────────────────────────────────────────────────────────────────
   // MIX OUTPUTS → MOTOR COMMANDS
@@ -154,6 +174,10 @@ void Balancer::applyBalanceControl() {
 
   int leftPWM = (int)constrain(leftCmd, -255.0f, 255.0f);
   int rightPWM = (int)constrain(rightCmd, -255.0f, 255.0f);
+
+  // Track PWM signs for next iteration's encoder direction
+  _lastLeftPWM = leftPWM;
+  _lastRightPWM = rightPWM;
 
   _motor->Drive(leftPWM, rightPWM);
 }
@@ -184,6 +208,9 @@ void Balancer::runLoop() {
     // Convert to physical units (X-axis forward, Z-axis up)
     float measuredAngle = atan2f((float)ax, (float)az) * RAD_TO_DEG - _angleZero;
     float measuredGyro = ((float)gy - _gyroBias) / GYRO_SCALE_500DPS;
+
+    // Gyro Z for turn damping (scale like AVR: /131 for ±250dps equivalent)
+    _gyroZ = -(float)gz / 131.0f;
 
     // ─────────────────────────────────────────────────────────────────────
     // SENSOR FUSION (Kalman Filter)
