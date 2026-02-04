@@ -7,8 +7,17 @@
 #include "KalmanFilter.h"
 #include "Motor.hpp"
 
-// Orientation config: IMU rotated 90 deg clockwise, Y axis faces forward
-// We treat forward tilt angle derived from (ay, az). Adjust if needed.
+// Orientation config: X-axis forward, Z-axis up
+// Tilt angle from atan2(ax, az), pitch rate from gy, yaw rate from gz
+
+// State machine matching AVR Tumbller startup behavior
+enum class BalanceState {
+  INIT,      // Just started, motors off, gyro calibrating
+  LEAN_BACK, // Pushing backward to lean off support
+  START,     // Waiting for robot to enter valid angle range
+  BALANCING, // Active self-balancing
+  FALLEN     // Fell over, waiting to recover
+};
 
 class Balancer {
 public:
@@ -19,11 +28,14 @@ public:
   void setSetpoints(float forward, float turn);
   bool isUpright() const { return fabsf(_kf.angle) < _angleLimit; }
   float getAngle() const { return _kf.angle; }
+  BalanceState getState() const { return _state; }
 
 private:
   static void taskEntry(void* arg);
   void runLoop();
   void calibrate(float dt);
+  bool isInValidRange() const;
+  void applyBalanceControl();
 
   MPU6050 _mpu;
   KalmanFilter _kf;
@@ -36,9 +48,16 @@ private:
   float _gyroBias = 0.0f;
   float _angleZero = 0.0f;
   float _angleLimit = 15.0f; // upright check
-  float _angleTrip = 30.0f;  // safety cutoff
+  float _angleTrip = 30.0f;  // safety cutoff (AVR uses ~27)
+  float _balanceAngleMin = -22.0f;  // valid balance range (from AVR)
+  float _balanceAngleMax = 22.0f;
   TaskHandle_t _taskHandle = nullptr;
   bool _running = false;
+
+  // State machine variables
+  BalanceState _state = BalanceState::INIT;
+  unsigned long _stateStartTime = 0;
+  unsigned long _leanBackDuration = 0;
 };
 
 #endif
