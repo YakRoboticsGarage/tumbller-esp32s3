@@ -8,6 +8,11 @@ String motorState;
 SensirionI2cSht3x sensor;
 bool sht3xReady = false;
 
+// Motor and balancer instances
+Motor g_motor;
+Balancer g_balancer;
+bool g_balancerEnabled = true;  // Enable self-balancing by default
+
 const char *const MOTOR_STATE_STRINGS[5] = {
     "FORWARD",
     "BACK",

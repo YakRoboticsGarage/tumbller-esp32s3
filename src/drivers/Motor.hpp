@@ -20,6 +20,8 @@ class Motor
           void Back(int speed);
           void Left(int speed);
           void Right(int speed);
+          // Signed per-wheel drive: negative = reverse
+          void Drive(int leftPWM, int rightPWM);
 
   public:
           static unsigned long encoder_count_right_a;

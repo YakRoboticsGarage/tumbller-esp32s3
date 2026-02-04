@@ -6,12 +6,10 @@
 
 void Motor::Encoder_init()
 {
-//   attachInterrupt(digitalPinToInterrupt(ENCODER_LEFT_A_PIN), EncoderCountLeftA, CHANGE);
-//   attachPinChangeInterrupt(ENCODER_RIGHT_A_PIN, EncoderCountRightA, CHANGE);
-    pinMode(ENCODER_LEFT_A_PIN, INPUT_PULLDOWN);
-    pinMode(ENCODER_RIGHT_A_PIN, INPUT_PULLDOWN);
-    attachInterrupt(ENCODER_LEFT_A_PIN, EncoderCountLeftA, RISING);
-    attachInterrupt(ENCODER_RIGHT_A_PIN, EncoderCountRightA, RISING);
+    pinMode(ENCODER_LEFT_A_PIN, INPUT_PULLUP);
+    pinMode(ENCODER_RIGHT_A_PIN, INPUT_PULLUP);
+    attachInterrupt(ENCODER_LEFT_A_PIN, EncoderCountLeftA, FALLING);
+    attachInterrupt(ENCODER_RIGHT_A_PIN, EncoderCountRightA, FALLING);
 }
 
 unsigned long Motor::encoder_count_right_a;

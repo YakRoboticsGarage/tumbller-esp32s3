@@ -7,6 +7,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
+#include "../drivers/Motor.hpp"
+#include "../drivers/Balancer.hpp"
+
 // Motor command types shared between tasks
 enum class MotorCommand : uint8_t {
   Forward,
@@ -27,6 +30,11 @@ extern String motorState;
 extern const char *const MOTOR_STATE_STRINGS[5];
 extern SensirionI2cSht3x sensor;
 extern bool sht3xReady;
+
+// Motor and balancer instances
+extern Motor g_motor;
+extern Balancer g_balancer;
+extern bool g_balancerEnabled;  // true = use balancer, false = direct motor control
 
 // Motor behavior constants
 constexpr int MOTOR_SPEED = 60;

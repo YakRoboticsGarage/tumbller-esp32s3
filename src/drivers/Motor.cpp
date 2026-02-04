@@ -64,3 +64,25 @@ void Motor::Right(int speed)
   analogWrite(PWMA_LEFT, speed);  // Left motor speed
   analogWrite(PWMB_RIGHT, speed); // Right motor speed
 }
+
+void Motor::Drive(int leftPWM, int rightPWM)
+{
+  // Clamp
+  leftPWM = constrain(leftPWM, -255, 255);
+  rightPWM = constrain(rightPWM, -255, 255);
+
+  // Determine directions: AIN1 controls left, BIN1 right
+  // Convention: 0 = forward, 1 = backward per existing methods
+  if (leftPWM >= 0) {
+    digitalWrite(AIN1, 0);
+  } else {
+    digitalWrite(AIN1, 1);
+  }
+  if (rightPWM >= 0) {
+    digitalWrite(BIN1, 0);
+  } else {
+    digitalWrite(BIN1, 1);
+  }
+  analogWrite(PWMA_LEFT, abs(leftPWM));
+  analogWrite(PWMB_RIGHT, abs(rightPWM));
+}
