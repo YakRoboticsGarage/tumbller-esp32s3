@@ -132,10 +132,14 @@ void Balancer::applyBalanceControl() {
   // ENCODER-BASED SPEED ESTIMATION (200Hz on ESP32)
   // ─────────────────────────────────────────────────────────────────────
   // Read and reset encoder counts atomically
-  unsigned long leftCount = Motor::encoder_count_left_a;
-  unsigned long rightCount = Motor::encoder_count_right_a;
+  unsigned long leftCount = 0;
+  unsigned long rightCount = 0;
+  noInterrupts();
+  leftCount = Motor::encoder_count_left_a;
+  rightCount = Motor::encoder_count_right_a;
   Motor::encoder_count_left_a = 0;
   Motor::encoder_count_right_a = 0;
+  interrupts();
 
   // Accumulate with direction sign based on last PWM
   _encoderLeftAccum += (_lastLeftPWM < 0) ? -(int)leftCount : (int)leftCount;
@@ -209,8 +213,8 @@ void Balancer::runLoop() {
     float measuredAngle = atan2f((float)ax, (float)az) * RAD_TO_DEG - _angleZero;
     float measuredGyro = ((float)gy - _gyroBias) / GYRO_SCALE_500DPS;
 
-    // Gyro Z for turn damping (scale like AVR: /131 for ±250dps equivalent)
-    _gyroZ = -(float)gz / 131.0f;
+    // Gyro Z for turn damping (match MPU6050 +/-500 dps scale)
+    _gyroZ = -(float)gz / GYRO_SCALE_500DPS;
 
     // ─────────────────────────────────────────────────────────────────────
     // SENSOR FUSION (Kalman Filter)
@@ -228,6 +232,7 @@ void Balancer::runLoop() {
         if (millis() - _stateStartTime > INIT_DELAY_MS) {
           // Calculate lean-back duration from current angle (AVR formula)
           float angleDiff = _kf.angle - 30.0f;
+          angleDiff = constrain(angleDiff, -45.0f, 45.0f);
           _leanBackDuration = (unsigned long)(angleDiff * angleDiff / 8.0f);
           _state = BalanceState::LEAN_BACK;
           _stateStartTime = millis();

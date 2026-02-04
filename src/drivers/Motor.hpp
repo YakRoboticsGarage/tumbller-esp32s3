@@ -24,8 +24,8 @@ class Motor
           void Drive(int leftPWM, int rightPWM);
 
   public:
-          static unsigned long encoder_count_right_a;
-          static unsigned long encoder_count_left_a;
+          static volatile unsigned long encoder_count_right_a;
+          static volatile unsigned long encoder_count_left_a;
 
   };
 

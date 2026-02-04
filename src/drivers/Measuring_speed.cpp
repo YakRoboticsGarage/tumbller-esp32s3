@@ -12,7 +12,7 @@ void Motor::Encoder_init()
     attachInterrupt(ENCODER_RIGHT_A_PIN, EncoderCountRightA, FALLING);
 }
 
-unsigned long Motor::encoder_count_right_a;
+volatile unsigned long Motor::encoder_count_right_a;
 //Getting right wheel speed.
 void Motor::EncoderCountRightA()
 {
@@ -20,7 +20,7 @@ void Motor::EncoderCountRightA()
 }
 
 
-unsigned long Motor::encoder_count_left_a;
+volatile unsigned long Motor::encoder_count_left_a;
 //Getting left wheel speed.
 void Motor::EncoderCountLeftA()
 {
