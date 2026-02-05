@@ -8,7 +8,7 @@ ESP32-S3 port of the AVR Tumbller self-balancing robot. The original AVR code is
 
 ```
 setup()
-  └─> task_common_init()      // Queue, I2C, SHT3x sensor
+  └─> task_common_init()      // Queue, I2C mutex, SHT3x sensor
   └─> motor_task_start()
         ├─> Motor pin/encoder init
         └─> g_balancer.begin()  // If g_balancerEnabled=true
@@ -27,14 +27,17 @@ setup()
 
 ## Balancer State Machine
 
-Matches AVR Tumbller startup sequence:
+Matches AVR Tumbller startup sequence, adapted for bi-directional startup:
 
 ```
 INIT (2s)          Motors OFF, gyro calibration
     │
     ▼
-LEAN_BACK          Push backward to tip off support
-    │              Duration = (angle - 30)² / 8 ms
+LEAN_BACK          Push to tip toward vertical
+    │              • Detects current lean direction (forward or backward)
+    │              • Spins wheels opposite to lean to tip toward upright
+    │              • Duration = max(50, angle² / 4) ms
+    │              • Skipped if already near vertical (|angle| < 15°)
     ▼
 START (2s max)     Balance control active, wait for valid angle
     │
@@ -46,8 +49,19 @@ BALANCING          Normal operation
     │
     └─> |angle| > 30° ──> FALLEN
 
-FALLEN             Motors OFF, auto-recover when angle valid for 1s
+FALLEN             Motors OFF
+    │              Auto-recover when angle valid for 1s
+    │              (unless manually stopped via /balance/stop)
 ```
+
+### Startup from Any Lean Direction
+
+The current robot hardware rests leaning **backward** when powered off. The LEAN_BACK state automatically detects the lean direction and compensates:
+
+- **Leaning backward** (angle < 0): wheels spin backward → body tips forward
+- **Leaning forward** (angle > 0): wheels spin forward → body tips backward
+
+This allows the robot to start balancing from either resting position without code changes.
 
 ## IMU Configuration
 
@@ -55,6 +69,8 @@ FALLEN             Motors OFF, auto-recover when angle valid for 1s
 - **Tilt angle**: `atan2(ax, az)`
 - **Pitch rate**: `gy` (for Kalman filter)
 - **Yaw rate**: `gz` (for turn damping)
+- **Gyro scale**: ±250 dps (131 LSB/°/s) - matches AVR setting
+- **Accel scale**: ±2g - matches AVR setting
 
 ## Control Loop
 
@@ -76,18 +92,18 @@ FALLEN             Motors OFF, auto-recover when angle valid for 1s
 │  4. TURN PD (with gyro damping)                             │
 │     turnOut = Kp_turn * target + Kd_turn * gyroZ            │
 │                                                             │
-│  5. MIXER                                                   │
-│     leftPWM  = speedOut - balance - turnOut                 │
-│     rightPWM = speedOut - balance + turnOut                 │
+│  5. MIXER (matches AVR: balance - speed - turn)             │
+│     leftPWM  = balance - speedOut - turnOut                 │
+│     rightPWM = balance - speedOut + turnOut                 │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## PID Gains (from AVR)
+## PID Gains (defaults from AVR)
 
 ```cpp
 // Balance PD
-kp_balance = 55.0f, kd_balance = 0.75f
+kp = 25.0f, kd = 0.75f
 
 // Speed PI
 kp_speed = 10.0f, ki_speed = 0.26f
@@ -95,6 +111,8 @@ kp_speed = 10.0f, ki_speed = 0.26f
 // Turn PD
 kp_turn = 2.5f, kd_turn = 0.5f
 ```
+
+Tune at runtime via HTTP API (see below).
 
 ## Kalman Filter Parameters
 
@@ -110,9 +128,11 @@ R_angle = 0.5f        // Measurement noise
 | Aspect | AVR | ESP32 Port |
 |--------|-----|------------|
 | Speed control rate | 25Hz (every 8th cycle) | 200Hz (every cycle) |
-| Gyro scale | 131 (±250 dps) | 65.5 (±500 dps) for both pitch and yaw |
+| Gyro scale | 131 LSB/°/s (±250 dps) | Same (±250 dps) |
+| Accel scale | ±2g | Same (±2g) |
 | Gyro bias | Hardcoded 128.1 | Runtime calibration |
 | K1 complementary filter | Defined but unused | Not implemented (dead code in AVR) |
+| I2C protection | N/A (single task) | Mutex for multi-task access |
 
 ## Files
 
@@ -120,38 +140,70 @@ R_angle = 0.5f        // Measurement noise
 - `src/drivers/Balancer.hpp` - State machine, gains, variables
 - `src/drivers/Balancer.cpp` - Control loop, Kalman filter integration
 - `src/drivers/KalmanFilter.h` - Sensor fusion (header-only)
-- `src/drivers/MPU6050.h/.cpp` - IMU driver
+- `src/drivers/MPU6050.h` - IMU driver (header-only)
 
 ### Motor Control
 - `src/drivers/Motor.hpp/.cpp` - PWM output, pin control
 - `src/drivers/Measuring_speed.cpp` - Encoder interrupts
 
 ### Tasks
-- `src/tasks/task_common.cpp` - Shared state, queue, g_balancer instance
+- `src/tasks/task_common.cpp` - Shared state, queue, I2C mutex, g_balancer instance
 - `src/tasks/motor_task.cpp` - Command processing, balancer startup
 - `src/tasks/server_task.cpp` - HTTP API
 
-## I2C Devices
+## I2C Bus
 
 | Device | Address | Notes |
 |--------|---------|-------|
-| MPU6050 | 0x68 | IMU for balancing |
+| MPU6050 | 0x68 | IMU for balancing (200Hz reads) |
 | SHT3x | 0x44 | Temperature/humidity sensor |
 
-Both share the I2C bus (Wire). `Wire.begin()` is called in `task_common_init()` and redundantly in `Balancer::begin()`.
+### I2C Configuration
+- Clock: 100kHz (conservative for EMI tolerance)
+- Timeout: 50ms
+- Protected by `g_i2cMutex` for thread safety
+
+### I2C Failure Recovery
+The balancer detects I2C failures (all-zero reads) and:
+1. Increments failure counter (visible via `/balance/status`)
+2. After 3 consecutive failures, resets the I2C bus
+3. Kalman filter coasts on previous state during failures
 
 ## HTTP API
 
-Motor commands via HTTP when `g_balancerEnabled = true`:
-- Sets balancer setpoints instead of direct motor control
-- Forward/Back: speed setpoint ±30
-- Left/Right: turn setpoint ±30
-- Stop: both setpoints to 0
+### Motor Commands
+- `GET /motor/forward` - Move forward
+- `GET /motor/back` - Move backward
+- `GET /motor/left` - Turn left
+- `GET /motor/right` - Turn right
+- `GET /motor/stop` - Stop
+
+### Balance Control
+- `GET /balance/status` - JSON with state, angle, speed, gains, i2c_fails
+- `GET /balance/start` - Restart (reset to INIT state)
+- `GET /balance/stop` - Stop balancing (enter FALLEN, no auto-recover)
+
+### PID Tuning (runtime)
+- `GET /balance/kp/<value>` - Set balance P gain
+- `GET /balance/kd/<value>` - Set balance D gain
+- `GET /balance/kp_speed/<value>` - Set speed P gain
+- `GET /balance/ki_speed/<value>` - Set speed I gain
+- `GET /balance/kp_turn/<value>` - Set turn P gain
+- `GET /balance/kd_turn/<value>` - Set turn D gain
+
+### Other
+- `GET /info` - Hostname and IP
+- `GET /sensor/ht` - Temperature/humidity from SHT3x
 
 ## Thread Safety
 
+### I2C Bus
+Protected by `g_i2cMutex` (FreeRTOS mutex):
+- Balancer task: 2ms timeout (time-critical)
+- Server task: 100ms timeout (can wait)
+
 ### Encoder Reads
-Encoder counts are modified in ISR and read in the balancer task. Protected with:
+Encoder counts are modified in ISR and read in the balancer task:
 ```cpp
 noInterrupts();
 leftCount = Motor::encoder_count_left_a;
@@ -163,14 +215,34 @@ interrupts();
 
 Encoder variables declared `volatile` in Motor.hpp and Measuring_speed.cpp.
 
-### Known Limitations
-- **Direction inference at low PWM**: When PWM is near zero but robot is still moving (inertia), the sign-based direction inference may be incorrect. Could add a deadband if this causes issues.
+## Hardware Notes
+
+### Known Issues
+- **I2C failures**: Can occur due to motor EMI or power supply noise
+  - See `docs/I2C_TROUBLESHOOTING.md` for diagnosis and fixes
+- **Direction inference at low PWM**: When PWM is near zero but robot is still moving (inertia), the sign-based direction inference may be incorrect
+
+### Recommended Hardware
+- External I2C pull-ups (4.7kΩ)
+- Decoupling capacitors (100µF + 100nF) near GY-521
+- Star ground topology (all grounds meet at battery)
+- Separate LDOs for logic (3.3V) and motors
+
+## Tests
+
+- `test/test_hardware/` - Motor and IMU basic tests
+- `test/test_imu_orientation/` - IMU orientation detection, I2C scan
+
+Run with:
+```bash
+pio test -f test_imu_orientation --without-testing  # Build only
+pio test -f test_imu_orientation                     # Build and upload
+```
 
 ## TODOs / Future Work
 
 - [ ] Tune PID gains for ESP32 (currently using AVR values)
-- [ ] Add HTTP endpoint to adjust gains at runtime
-- [ ] Add telemetry endpoint (angle, speed, state)
-- [ ] Consider removing redundant `Wire.begin()` in Balancer::begin()
 - [ ] Test encoder direction inference with actual hardware
 - [ ] Add deadband for direction inference if low-PWM issues occur
+- [ ] Persist tuned gains to NVS (non-volatile storage)
+- [ ] Add WebSocket for real-time telemetry streaming
