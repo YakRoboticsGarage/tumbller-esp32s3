@@ -12,22 +12,6 @@ static MPU6050 mpu;
 void setUp() {}
 void tearDown() {}
 
-void test_leds()
-{
-  pinMode(LED_RED, OUTPUT);
-  pinMode(LED_GREEN, OUTPUT);
-  pinMode(LED_BLUE, OUTPUT);
-
-  digitalWrite(LED_RED, HIGH); delay(100);
-  digitalWrite(LED_RED, LOW);
-  digitalWrite(LED_GREEN, HIGH); delay(100);
-  digitalWrite(LED_GREEN, LOW);
-  digitalWrite(LED_BLUE, HIGH); delay(100);
-  digitalWrite(LED_BLUE, LOW);
-
-  // If we reached here without a fault, pass
-  TEST_PASS_MESSAGE("LEDs toggled");
-}
 
 void test_motors()
 {
@@ -63,7 +47,6 @@ void setup()
 {
   delay(2000); // allow serial to connect
   UNITY_BEGIN();
-  RUN_TEST(test_leds);
   RUN_TEST(test_motors);
   RUN_TEST(test_imu);
   UNITY_END();

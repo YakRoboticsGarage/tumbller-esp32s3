@@ -1,4 +1,5 @@
 #include "Balancer.hpp"
+#include "../tasks/task_common.hpp"  // For g_i2cMutex
 
 // ============================================================================
 // CONSTANTS
@@ -6,7 +7,7 @@
 #ifndef RAD_TO_DEG
 #define RAD_TO_DEG        57.29578f    // 180 / PI
 #endif
-#define GYRO_SCALE_500DPS 65.5f        // LSB per deg/s at ±500 dps (32768/500)
+#define GYRO_SCALE_250DPS 131.0f       // LSB per deg/s at ±250 dps (32768/250) - AVR setting
 #define LOOP_FREQ_HZ      200          // Control loop frequency
 #define LOOP_DT           0.005f       // 1 / LOOP_FREQ_HZ (seconds)
 
@@ -78,8 +79,8 @@
  *  │                   ▼                ▼                │
  *  │             ┌──────────────────────────┐            │
  *  │             │     MIXER                │            │
- *  │             │ left  = speed-balance-turn│           │
- *  │             │ right = speed-balance+turn│           │
+ *  │             │ left  = balance-speed-turn│           │
+ *  │             │ right = balance-speed+turn│           │
  *  │             └────────────┬─────────────┘            │
  *  └──────────────────────────┼──────────────────────────┘
  *                             │
@@ -115,6 +116,25 @@ void Balancer::begin(Motor* motor) {
 }
 
 void Balancer::stop() { _running = false; }
+
+void Balancer::restart() {
+  // Reset to INIT state to recalibrate and restart
+  _manualStop = false;  // Clear manual stop flag
+  _state = BalanceState::INIT;
+  _stateStartTime = millis();
+  _speedI = 0.0f;
+  _speedFilter = 0.0f;
+  _encoderLeftAccum = 0;
+  _encoderRightAccum = 0;
+}
+
+void Balancer::fall() {
+  // Set to FALLEN state - motors off, no auto-recovery until restart()
+  _manualStop = true;  // Prevent auto-recovery
+  _state = BalanceState::FALLEN;
+  _stateStartTime = millis();
+  _motor->Stop(0);
+}
 
 void Balancer::setSetpoints(float forward, float turn) {
   _targetSpeed = constrain(forward, -100.0f, 100.0f);
@@ -171,10 +191,10 @@ void Balancer::applyBalanceControl() {
   float turnOut = _gains.kp_turn * _targetTurn + _gains.kd_turn * _gyroZ;
 
   // ─────────────────────────────────────────────────────────────────────
-  // MIX OUTPUTS → MOTOR COMMANDS
+  // MIX OUTPUTS → MOTOR COMMANDS (matches AVR: balance - speed - turn)
   // ─────────────────────────────────────────────────────────────────────
-  float leftCmd = speedOut - balance - turnOut;
-  float rightCmd = speedOut - balance + turnOut;
+  float leftCmd = balance - speedOut - turnOut;
+  float rightCmd = balance - speedOut + turnOut;
 
   int leftPWM = (int)constrain(leftCmd, -255.0f, 255.0f);
   int rightPWM = (int)constrain(rightCmd, -255.0f, 255.0f);
@@ -207,20 +227,52 @@ void Balancer::runLoop() {
     // READ SENSORS (always, regardless of state)
     // ─────────────────────────────────────────────────────────────────────
     int16_t ax, ay, az, gx, gy, gz;
-    _mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    
+    // Take I2C mutex with short timeout - balancer is time-critical
+    bool gotMutex = (g_i2cMutex && xSemaphoreTake(g_i2cMutex, pdMS_TO_TICKS(2)) == pdTRUE);
+    if (gotMutex) {
+      _mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+      xSemaphoreGive(g_i2cMutex);
+    } else {
+      // Couldn't get mutex - skip this cycle, coast on previous state
+      ax = ay = az = 0;  // Will be detected as I2C failure
+    }
 
-    // Convert to physical units (X-axis forward, Z-axis up)
-    float measuredAngle = atan2f((float)ax, (float)az) * RAD_TO_DEG - _angleZero;
-    float measuredGyro = ((float)gy - _gyroBias) / GYRO_SCALE_500DPS;
+    // I2C failure detection - skip Kalman update but still run state machine
+    static int i2cFailCount = 0;
+    bool sensorOk = true;
+    if (ax == 0 && ay == 0 && az == 0) {
+      i2cFailCount++;
+      _i2cTotalFailures++;
+      sensorOk = false;
+      if (i2cFailCount >= 3) {
+        // Quick I2C bus recovery (no long delay - robot is balancing!)
+        Wire.end();
+        Wire.begin();
+        Wire.setClock(100000);
+        Wire.setTimeOut(50);
+        i2cFailCount = 0;
+      }
+    } else {
+      i2cFailCount = 0;
+    }
 
-    // Gyro Z for turn damping (match MPU6050 +/-500 dps scale)
-    _gyroZ = -(float)gz / GYRO_SCALE_500DPS;
+    // Only update Kalman filter if sensor read was valid
+    if (sensorOk) {
+      // Convert to physical units (X-axis forward, Z-axis up)
+      float measuredAngle = atan2f((float)ax, (float)az) * RAD_TO_DEG - _angleZero;
+      float measuredGyro = ((float)gy - _gyroBias) / GYRO_SCALE_250DPS;
 
-    // ─────────────────────────────────────────────────────────────────────
-    // SENSOR FUSION (Kalman Filter)
-    // ─────────────────────────────────────────────────────────────────────
-    _kf.update(measuredAngle, measuredGyro, LOOP_DT,
-               KF_PROCESS_NOISE_ANGLE, KF_PROCESS_NOISE_GYRO_BIAS, KF_MEASUREMENT_NOISE);
+      // Gyro Z for turn damping (MPU6050 +/-250 dps scale, AVR setting)
+      _gyroZ = -(float)gz / GYRO_SCALE_250DPS;
+
+      // ─────────────────────────────────────────────────────────────────────
+      // SENSOR FUSION (Kalman Filter)
+      // ─────────────────────────────────────────────────────────────────────
+      _kf.update(measuredAngle, measuredGyro, LOOP_DT,
+                 KF_PROCESS_NOISE_ANGLE, KF_PROCESS_NOISE_GYRO_BIAS, KF_MEASUREMENT_NOISE);
+    }
+    // If sensor failed, Kalman filter coasts on previous state
 
     // ─────────────────────────────────────────────────────────────────────
     // STATE MACHINE (matches AVR Tumbller startup sequence)
@@ -230,19 +282,28 @@ void Balancer::runLoop() {
         // Motors off, waiting for gyro calibration to settle
         _motor->Stop(0);
         if (millis() - _stateStartTime > INIT_DELAY_MS) {
-          // Calculate lean-back duration from current angle (AVR formula)
-          float angleDiff = _kf.angle - 30.0f;
-          angleDiff = constrain(angleDiff, -45.0f, 45.0f);
-          _leanBackDuration = (unsigned long)(angleDiff * angleDiff / 8.0f);
-          _state = BalanceState::LEAN_BACK;
-          _stateStartTime = millis();
+          float angleAbs = fabsf(_kf.angle);
+          // If already close to vertical, skip LEAN_BACK and go straight to START
+          if (angleAbs < 15.0f) {
+            _state = BalanceState::START;
+            _stateStartTime = millis();
+          } else {
+            // Calculate lean duration and direction from current angle
+            // Motor torque reaction tips body opposite to wheel spin direction
+            angleAbs = constrain(angleAbs, 0.0f, 45.0f);
+            // Minimum 50ms, scales with angle squared
+            _leanDuration = max(50UL, (unsigned long)(angleAbs * angleAbs / 4.0f));
+            _leanDirection = (_kf.angle > 0) ? -1 : 1;  // spin opposite to tip toward zero
+            _state = BalanceState::LEAN_BACK;
+            _stateStartTime = millis();
+          }
         }
         break;
 
       case BalanceState::LEAN_BACK:
-        // Push backward to tip robot off its forward support
-        _motor->Drive(-LEAN_BACK_PWM, -LEAN_BACK_PWM);
-        if (millis() - _stateStartTime > _leanBackDuration) {
+        // Push in appropriate direction to tip robot toward vertical
+        _motor->Drive(_leanDirection * LEAN_BACK_PWM, _leanDirection * LEAN_BACK_PWM);
+        if (millis() - _stateStartTime > _leanDuration) {
           _motor->Stop(0);
           _state = BalanceState::START;
           _stateStartTime = millis();
@@ -277,14 +338,15 @@ void Balancer::runLoop() {
       case BalanceState::FALLEN:
         // Motors off, waiting for recovery
         _motor->Stop(0);
-        if (isInValidRange()) {
+        // Only auto-recover if not manually stopped
+        if (!_manualStop && isInValidRange()) {
           // Robot is back in valid range - check if stable
           if (millis() - _stateStartTime > FALLEN_RECOVERY_MS) {
             _speedI = 0;  // Reset integrator
             _state = BalanceState::BALANCING;
           }
-        } else {
-          // Still fallen - reset timer
+        } else if (!_manualStop) {
+          // Still fallen - reset timer (but not if manually stopped)
           _stateStartTime = millis();
         }
         break;
@@ -306,8 +368,13 @@ void Balancer::calibrate(float dt) {
   
   for (int i = 0; i < numSamples; i++) {
     int16_t ax, ay, az, gx, gy, gz;
-    _mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-    gyroSum += gy;
+    
+    // Take I2C mutex for calibration reads
+    if (g_i2cMutex && xSemaphoreTake(g_i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      _mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+      xSemaphoreGive(g_i2cMutex);
+      gyroSum += gy;
+    }
     vTaskDelay(pdMS_TO_TICKS((int)(dt * 1000)));
   }
   

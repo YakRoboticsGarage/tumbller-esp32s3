@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <SensirionI2cSht3x.h>
+#include <freertos/semphr.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
@@ -29,6 +30,7 @@ extern QueueHandle_t g_motorQueue;
 extern String motorState;
 extern const char *const MOTOR_STATE_STRINGS[5];
 extern SensirionI2cSht3x sensor;
+extern SemaphoreHandle_t g_i2cMutex;  // Protects Wire bus access across tasks
 extern bool sht3xReady;
 
 // Motor and balancer instances

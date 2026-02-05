@@ -15,6 +15,7 @@ static void sendJson(WiFiClient &client, const char *status, const String &body)
 static bool handleInfoRequest(WiFiClient &client, const String &header);
 static bool handleSensorRequest(WiFiClient &client, const String &header);
 static bool handleMotorRequest(WiFiClient &client, const String &header);
+static bool handleBalanceRequest(WiFiClient &client, const String &header);
 
 void server_task_start() {
   // Launch a dedicated server task pinned to core 0
@@ -63,6 +64,7 @@ static void serverTask(void *pvParameters) {
             if (handleInfoRequest(client, header)) break;
             if (handleSensorRequest(client, header)) break;
             if (handleMotorRequest(client, header)) break;
+            if (handleBalanceRequest(client, header)) break;
 
             // Unknown route
             client.println("HTTP/1.1 404 Not Found");
@@ -114,7 +116,14 @@ static bool handleSensorRequest(WiFiClient &client, const String &header) {
 
   float aTemperature = 0.0;
   float aHumidity = 0.0;
+  
+  // Take I2C mutex to avoid bus contention with balancer's MPU6050 reads
+  if (xSemaphoreTake(g_i2cMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    sendJson(client, "HTTP/1.1 503 Service Unavailable", "{\"error\":\"I2C bus busy\"}");
+    return true;
+  }
   int16_t error = sensor.measureSingleShot(REPEATABILITY_MEDIUM, false, aTemperature, aHumidity);
+  xSemaphoreGive(g_i2cMutex);
   if (error != NO_ERROR) {
 #ifdef USE_SERIAL
     char errorMessage[64];
@@ -200,5 +209,108 @@ static bool handleMotorRequest(WiFiClient &client, const String &header) {
   }
 
   client.println();
+  return true;
+}
+
+// Helper to get state name string
+static const char* balanceStateName(BalanceState state) {
+  switch (state) {
+    case BalanceState::INIT:      return "INIT";
+    case BalanceState::LEAN_BACK: return "LEAN_BACK";
+    case BalanceState::START:     return "START";
+    case BalanceState::BALANCING: return "BALANCING";
+    case BalanceState::FALLEN:    return "FALLEN";
+    default:                      return "UNKNOWN";
+  }
+}
+
+// Helper to extract float value from path like "/balance/kp/55.5"
+static float parsePathFloat(const String &header, const char* prefix) {
+  int idx = header.indexOf(prefix);
+  if (idx < 0) return -1.0f;
+  idx += strlen(prefix);
+  int end = header.indexOf(' ', idx);
+  if (end < 0) end = header.length();
+  return header.substring(idx, end).toFloat();
+}
+
+static bool handleBalanceRequest(WiFiClient &client, const String &header) {
+  // /balance/* → balance control endpoints
+  if (header.indexOf("GET /balance/") < 0) return false;
+
+  // /balance/status → return current state, angle, speed as JSON
+  if (header.indexOf("GET /balance/status") >= 0) {
+    Balancer::Gains gains = g_balancer.getGains();
+    String json = "{";
+    json += "\"state\":\"" + String(balanceStateName(g_balancer.getState())) + "\",";
+    json += "\"angle\":" + String(g_balancer.getAngle(), 2) + ",";
+    json += "\"speed\":" + String(g_balancer.getSpeedEstimate(), 2) + ",";
+    json += "\"upright\":" + String(g_balancer.isUpright() ? "true" : "false") + ",";
+    json += "\"kp\":" + String(gains.kp, 3) + ",";
+    json += "\"kd\":" + String(gains.kd, 3) + ",";
+    json += "\"kp_speed\":" + String(gains.kp_speed, 3) + ",";
+    json += "\"ki_speed\":" + String(gains.ki_speed, 3) + ",";
+    json += "\"kp_turn\":" + String(gains.kp_turn, 3) + ",";
+    json += "\"kd_turn\":" + String(gains.kd_turn, 3) + ",";
+    json += "\"i2c_fails\":" + String(g_balancer.getI2CFailures());
+    json += "}";
+    sendJson(client, "HTTP/1.1 200 OK", json);
+    return true;
+  }
+
+  // /balance/start → reset to INIT state
+  if (header.indexOf("GET /balance/start") >= 0) {
+    g_balancer.restart();
+    sendJson(client, "HTTP/1.1 200 OK", "{\"status\":\"restarting\"}");
+    return true;
+  }
+
+  // /balance/stop → set to FALLEN state (motors off)
+  if (header.indexOf("GET /balance/stop") >= 0) {
+    g_balancer.fall();
+    sendJson(client, "HTTP/1.1 200 OK", "{\"status\":\"stopped\"}");
+    return true;
+  }
+
+  // Individual gain endpoints: /balance/<param>/<value>
+  Balancer::Gains gains = g_balancer.getGains();
+  bool gainUpdated = false;
+
+  if (header.indexOf("GET /balance/kp/") >= 0) {
+    float val = parsePathFloat(header, "/balance/kp/");
+    if (val >= 0) { gains.kp = val; gainUpdated = true; }
+  } else if (header.indexOf("GET /balance/kd/") >= 0) {
+    float val = parsePathFloat(header, "/balance/kd/");
+    if (val >= 0) { gains.kd = val; gainUpdated = true; }
+  } else if (header.indexOf("GET /balance/kp_speed/") >= 0) {
+    float val = parsePathFloat(header, "/balance/kp_speed/");
+    if (val >= 0) { gains.kp_speed = val; gainUpdated = true; }
+  } else if (header.indexOf("GET /balance/ki_speed/") >= 0) {
+    float val = parsePathFloat(header, "/balance/ki_speed/");
+    if (val >= 0) { gains.ki_speed = val; gainUpdated = true; }
+  } else if (header.indexOf("GET /balance/kp_turn/") >= 0) {
+    float val = parsePathFloat(header, "/balance/kp_turn/");
+    if (val >= 0) { gains.kp_turn = val; gainUpdated = true; }
+  } else if (header.indexOf("GET /balance/kd_turn/") >= 0) {
+    float val = parsePathFloat(header, "/balance/kd_turn/");
+    if (val >= 0) { gains.kd_turn = val; gainUpdated = true; }
+  }
+
+  if (gainUpdated) {
+    g_balancer.setGains(gains);
+    String json = "{\"status\":\"updated\",";
+    json += "\"kp\":" + String(gains.kp, 3) + ",";
+    json += "\"kd\":" + String(gains.kd, 3) + ",";
+    json += "\"kp_speed\":" + String(gains.kp_speed, 3) + ",";
+    json += "\"ki_speed\":" + String(gains.ki_speed, 3) + ",";
+    json += "\"kp_turn\":" + String(gains.kp_turn, 3) + ",";
+    json += "\"kd_turn\":" + String(gains.kd_turn, 3);
+    json += "}";
+    sendJson(client, "HTTP/1.1 200 OK", json);
+    return true;
+  }
+
+  // Unknown balance route
+  sendJson(client, "HTTP/1.1 404 Not Found", "{\"error\":\"Unknown balance endpoint\"}");
   return true;
 }

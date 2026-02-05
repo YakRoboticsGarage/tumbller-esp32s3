@@ -24,11 +24,21 @@ public:
     explicit MPU6050(uint8_t address = MPU6050_DEFAULT_ADDRESS) : devAddr(address) {}
     void initialize() {
         Wire.begin();
+        Wire.setClock(100000);  // 100kHz - more reliable on ESP32
+        Wire.setTimeOut(50);    // 50ms timeout to prevent hangs
+
+        // Reset device first
+        I2Cdev::writeByte(devAddr, MPU6050_RA_PWR_MGMT_1, 0x80); // DEVICE_RESET
+        delay(100);  // Wait for reset
+
+        // Wake up and configure
+        I2Cdev::writeByte(devAddr, MPU6050_RA_PWR_MGMT_1, 0x00); // Wake up (SLEEP=0)
+        delay(10);
         I2Cdev::writeByte(devAddr, MPU6050_RA_PWR_MGMT_1, 0x01); // PLL with X axis gyro
         I2Cdev::writeByte(devAddr, MPU6050_RA_SMPLRT_DIV, 0x04);  // 200 Hz
         I2Cdev::writeByte(devAddr, MPU6050_RA_CONFIG, 0x03);      // DLPF 42Hz
-        I2Cdev::writeByte(devAddr, MPU6050_RA_GYRO_CONFIG, 0x08); // +/-500 deg/s
-        I2Cdev::writeByte(devAddr, MPU6050_RA_ACCEL_CONFIG, 0x10);// +/-8g
+        I2Cdev::writeByte(devAddr, MPU6050_RA_GYRO_CONFIG, 0x00); // +/-250 deg/s (AVR setting)
+        I2Cdev::writeByte(devAddr, MPU6050_RA_ACCEL_CONFIG, 0x00);// +/-2g (AVR setting)
         I2Cdev::writeByte(devAddr, MPU6050_RA_INT_ENABLE, 0x00);
     }
     bool testConnection() {
