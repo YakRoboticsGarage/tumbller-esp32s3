@@ -19,12 +19,23 @@ set -e
 
 if [[ -z "$PIOCMD" ]]
 then
-  echo "PlatformIO not found in PATH or in $HOME/.platformio/penv/bin; Try to install from official commands"
-  sudo apt-get install --yes curl
-  curl -fsSL -o get-platformio.py https://raw.githubusercontent.com/platformio/platformio-core-installer/master/get-platformio.py
-  python3 get-platformio.py
-  rm get-platformio.py
-  echo "You may need to add ~/.platformio/penv/bin to your PATH for generic use."
+  echo "PlatformIO not found in PATH or in $HOME/.platformio/penv/bin"
+  read -p "Ok to try install from official commands? [y/N]" okay
+  if [[ "$okay" = "y" ]]
+  then
+    sudo apt-get install --yes curl
+    curl -fsSL -o get-platformio.py https://raw.githubusercontent.com/platformio/platformio-core-installer/master/get-platformio.py
+    python3 get-platformio.py
+    rm get-platformio.py
+    echo "PlatformIO standard installation complete"
+    echo "Setting up permissions for udev---will need your permissions to sudo"
+    curl -fsSL https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/assets/system/99-platformio-udev.rules | sudo tee /etc/udev/rules.d/99-platformio-udev.rules
+    sudo systemctl restart udev
+    echo "You may need to add ~/.platformio/penv/bin to your PATH for generic use."
+  else
+    echo "Please install PlatformIO and have it available on PATH to continue."
+    exit 1
+  fi
 fi
 
 echo
