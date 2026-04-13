@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+
+set -e
+
+# 1. Install PlatformIO
+set +e
+PIOCMD=
+for candidate in pio $HOME/.platformio/penv/bin/pio
+do
+  $candidate --version 2&> /dev/null
+  if [[ "$?" = "0" ]]
+  then
+    PIOCMD=$candidate
+    echo -n Using $($PIOCMD --version)
+    break
+  fi
+done
+set -e
+
+if [[ -z "$PIOCMD" ]]
+then
+  echo "PlatformIO not found in PATH or in $HOME/.platformio/penv/bin; Try to install from official commands"
+  sudo apt-get install --yes curl
+  curl -fsSL -o get-platformio.py https://raw.githubusercontent.com/platformio/platformio-core-installer/master/get-platformio.py
+  python3 get-platformio.py
+  rm get-platformio.py
+  echo "You may need to add ~/.platformio/penv/bin to your PATH for generic use."
+fi
+
+echo
+
+
+# 2. Find S3 serial device
+dialoutgroup=$(groups | grep dialout)
+if [[ -z "$dialoutgroup" ]]
+then
+  >&2 echo "WARNING: The current user is not in the dialout group. This user may not have access to connected ESP32s. This depends on OS, so just a warning, but it could be source of problems."
+fi
+read -p "Please unplug your ESP32-S3 from the computer running this script. Press any key when confirmed" key
+ls /dev/ > .dev_list
+read -p "Please now plug your ESP32-S3 to the computer running this script. Press any key when confirmed" key
+echo "Your ESP32-S3 port should be listed here:"
+ls /dev/ | diff --suppress-common-lines -y - .dev_list
+rm .dev_list
+
+echo
+
+
+# 3. Check the S3 with ESP sample code
+echo "You can check the ESP32-S3 works alright with an Espressif Hello World, example at: https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/linux-macos-start-project.html#activate-using-eim-cli"
